@@ -190,6 +190,12 @@ pub struct Record {
 
 const MAGIC_BYTE_OFFSET: usize = 16;
 
+/// Smallest possible encoding of a v2 record.
+const MIN_RECORD_SIZE: usize = 7;
+
+/// Upper bound on header capacity preallocated from the untrusted header count.
+const MAX_PREALLOCATED_HEADERS: usize = 64;
+
 impl RecordBatchEncoder {
     /// Encode records into given buffer, using provided encoding options that select the encoding
     /// strategy based on version.
@@ -518,7 +524,9 @@ impl RecordBatchDecoder {
         version: i8,
         records: &mut Vec<Record>,
     ) -> Result<()> {
-        records.reserve((batch_decode_info.record_count as usize).min(buf.remaining()));
+        records.reserve(
+            (batch_decode_info.record_count as usize).min(buf.remaining() / MIN_RECORD_SIZE),
+        );
         for _ in 0..batch_decode_info.record_count {
             records.push(Record::decode_new(buf, batch_decode_info, version)?);
         }
@@ -897,7 +905,7 @@ impl Record {
         }
         let num_headers = num_headers as usize;
 
-        let mut headers = IndexMap::with_capacity(num_headers);
+        let mut headers = IndexMap::with_capacity(num_headers.min(MAX_PREALLOCATED_HEADERS));
         for _ in 0..num_headers {
             // Key len
             let key_len: i32 = types::VarInt.decode(buf)?;
