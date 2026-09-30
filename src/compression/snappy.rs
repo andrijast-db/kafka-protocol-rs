@@ -4,7 +4,7 @@ use snap::raw::*;
 
 use crate::protocol::buf::{ByteBuf, ByteBufMut};
 
-use super::{Compressor, Decompressor};
+use super::{Compressor, DecompressedSizeLimitExceeded, Decompressor};
 
 /// Kafka variant of the snappy compression algorithm. See
 /// <https://github.com/xerial/snappy-java?tab=readme-ov-file#compatibility-notes> for notes about
@@ -63,6 +63,13 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
     where
         F: FnOnce(&mut Self::Buf) -> Result<R>,
     {
+        Self::decompress_with_limit(compressed, usize::MAX, f)
+    }
+
+    fn decompress_with_limit<R, F>(compressed: &mut B, max_size: usize, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Self::Buf) -> Result<R>,
+    {
         // See https://github.com/xerial/snappy-java?tab=readme-ov-file#compatibility-notes
         if !compressed.has_remaining() {
             anyhow::bail!("expected some bytes in snappy stream");
@@ -81,6 +88,9 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
         {
             let compressed = compressed.copy_to_bytes(compressed.remaining());
             let actual_len = decompress_len(&compressed).context("failed to read snappy header")?;
+            if actual_len > max_size {
+                return Err(DecompressedSizeLimitExceeded { limit: max_size }.into());
+            }
             let mut tmp = BytesMut::zeroed(actual_len);
             Decoder::new()
                 .decompress(&compressed, &mut tmp)
@@ -105,10 +115,12 @@ impl<B: ByteBuf> Decompressor<B> for Snappy {
             let uncompressed_block_length = decompress_len(&compressed_block)
                 .context("failed to get snappy uncompressed length")?;
             let uncompressed_block_start = uncompressed.len();
-            uncompressed.resize(
-                uncompressed_block_start.saturating_add(uncompressed_block_length),
-                0,
-            );
+            let uncompressed_end =
+                uncompressed_block_start.saturating_add(uncompressed_block_length);
+            if uncompressed_end > max_size {
+                return Err(DecompressedSizeLimitExceeded { limit: max_size }.into());
+            }
+            uncompressed.resize(uncompressed_end, 0);
 
             Decoder::new()
                 .decompress(

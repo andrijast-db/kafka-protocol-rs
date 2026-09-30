@@ -24,4 +24,11 @@ impl<B: ByteBuf> Decompressor<B> for None {
     {
         f(buf)
     }
+
+    fn decompress_with_limit<R, F>(buf: &mut B, _max_size: usize, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Self::Buf) -> Result<R>,
+    {
+        f(buf)
+    }
 }

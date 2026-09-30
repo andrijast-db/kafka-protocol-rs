@@ -8,7 +8,7 @@ use flate2::Compression;
 
 use crate::protocol::buf::{ByteBuf, ByteBufMut};
 
-use super::{Compressor, Decompressor};
+use super::{Compressor, Decompressor, LimitedWriter};
 
 /// Gzip compression algorithm. See [Kafka's broker configuration](https://kafka.apache.org/documentation/#brokerconfigs_compression.type)
 /// for more information.
@@ -39,14 +39,20 @@ impl<B: ByteBuf> Decompressor<B> for Gzip {
     where
         F: FnOnce(&mut Self::Buf) -> Result<R>,
     {
-        let mut tmp = BytesMut::new();
+        Self::decompress_with_limit(buf, usize::MAX, f)
+    }
 
+    fn decompress_with_limit<R, F>(buf: &mut B, max_size: usize, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Self::Buf) -> Result<R>,
+    {
         // Decompress directly from the input buffer
-        let mut d = GzDecoder::new((&mut tmp).writer());
+        let mut d = GzDecoder::new(LimitedWriter::new(max_size));
         d.write_all(&buf.copy_to_bytes(buf.remaining()))
-            .context("Failed to decompress gzip")?;
-        d.finish().context("Failed to decompress gzip")?;
+            .and_then(|_| d.try_finish())
+            .map_err(|e| d.get_ref().map_err(e, "Failed to decompress gzip"))?;
+        let tmp = d.finish().context("Failed to decompress gzip")?.buf;
 
-        f(&mut tmp.into())
+        f(&mut tmp.freeze())
     }
 }
